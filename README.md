@@ -26,7 +26,7 @@
         <strong>MSRV is 1.85+</strong> (Rust 2024 edition).
     </p>
     <blockquote>
-        <strong>Status: pre-1.0, in active development.</strong> The public API is being designed across the 0.x series and frozen at <code>1.0.0</code>. See <a href="./CHANGELOG.md"><code>CHANGELOG.md</code></a>.
+        <strong>Status: stable.</strong> The public API is frozen as of <code>1.0.0</code> and follows Semantic Versioning &mdash; no breaking changes before <code>2.0</code>. See <a href="./CHANGELOG.md"><code>CHANGELOG.md</code></a>.
     </blockquote>
 </div>
 
@@ -37,14 +37,53 @@
 
 ```toml
 [dependencies]
-parser-lang = "0.1"
+parser-lang = "1"
+```
+
+<br>
+
+## Example
+
+A calculator that evaluates `1 + 2 * 3` to `7` with correct precedence — a Pratt grammar over a `token-lang` stream.
+
+```rust
+use parser_lang::{Parser, Pratt, Span, Token, TokenKind};
+
+#[derive(Clone, Copy)]
+enum K { Num(i64), Plus, Star, Eof }
+impl TokenKind for K {
+    fn is_eof(&self) -> bool { matches!(self, K::Eof) }
+}
+
+struct Calc;
+impl<'t> Pratt<'t, K> for Calc {
+    type Output = i64;
+    fn prefix(&mut self, p: &mut Parser<'t, K>) -> Option<i64> {
+        match p.bump()?.kind() { K::Num(n) => Some(*n), _ => None }
+    }
+    fn infix_binding(&self, k: &K) -> Option<(u8, u8)> {
+        match k { K::Plus => Some((1, 2)), K::Star => Some((3, 4)), _ => None }
+    }
+    fn infix(&mut self, op: &'t Token<K>, l: i64, r: i64) -> Option<i64> {
+        match op.kind() { K::Plus => Some(l + r), K::Star => Some(l * r), _ => None }
+    }
+}
+
+let s = |i| Span::new(i, i + 1);
+let tokens = [
+    Token::new(K::Num(1), s(0)), Token::new(K::Plus, s(1)),
+    Token::new(K::Num(2), s(2)), Token::new(K::Star, s(3)),
+    Token::new(K::Num(3), s(4)), Token::new(K::Eof, Span::empty(5)),
+];
+let mut p = Parser::new(&tokens);
+assert_eq!(Calc.parse(&mut p), Some(7));
 ```
 
 <br>
 
 ## Status
 
-This is the <code>v0.1.0</code> scaffold: structure, tooling, and quality gates are in place; the implementation lands across the 0.x series per the <a href="./dev/ROADMAP.md"><code>ROADMAP</code></a> and <a href="./docs/API.md"><code>docs/API.md</code></a>.
+This is <code>v1.0.0</code>: the public API is stable and frozen under SemVer. The `Parser` cursor (with error recovery) and the `Pratt` precedence engine are complete and catalogued in <a href="./docs/API.md"><code>docs/API.md</code></a>.
 
 <hr>
 <br>

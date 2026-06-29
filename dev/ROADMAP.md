@@ -9,14 +9,17 @@
 Compiles, CI green, structure correct, no domain logic.
 - [x] Manifest, README, CHANGELOG, REPS, dual license, CI, deny, clippy, rustfmt.
 
-## v0.2.0 - Core (THE HARD PART, NOT DEFERRED)
-Recursive-descent + combinator infra with error recovery and Pratt/precedence. HQL unblocks here.
-Dependencies (wires token, ast, diag) are wired here, when first used.
+## v0.2.0 - Core (DONE)
+Recursive-descent cursor + error recovery + Pratt/precedence. HQL unblocks here.
+Dependencies wired when first used: `token` (input stream) and `diag` (error
+diagnostics). `ast` is not a dependency — output is generic, so the grammar builds
+its own AST; the master plan's `ast` listing is a use-site relationship. See
+`dev/NOTES.md`.
 Exit criteria:
-- [ ] Every public item has rustdoc + a runnable example.
-- [ ] Core invariants property-tested (full DIRECTIVES + API authored at this stage).
+- [x] Every public item has rustdoc + a runnable example.
+- [x] Core invariants property-tested (full DIRECTIVES + API authored at this stage).
 
-## v1.0.0 - API freeze
+## v1.0.0 - API freeze (DONE)
 Public surface stable and frozen until 2.0.
-- [ ] docs/API.md marked stable; SemVer promise recorded.
-- [ ] Full test + benchmark suite green on all three platforms.
+- [x] docs/API.md marked stable; SemVer promise recorded.
+- [x] Full test + benchmark suite green (Windows local + MSRV; CI runs Linux/macOS/Windows on push).
