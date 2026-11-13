@@ -18,7 +18,7 @@
 
 <div align="left">
     <p>
-        parser-lang is the MAIN-tier crate that follows: Recursive-descent + combinator infra with error recovery and Pratt/precedence. HQL unblocks here. Part of the -lang language-construction family; see _strategy/LANG_COLLECTION.md for the master plan.
+        parser-lang is the MAIN-tier crate that follows: Recursive-descent + combinator infra with error recovery and Pratt/precedence. HQL unblocks here. Part of the -lang language-construction family.
     </p>
     <br>
     <hr>
