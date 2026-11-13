@@ -21,6 +21,41 @@
 
 ---
 
+## [1.1.0] - 2026-11-12
+
+Deep or hostile input now ends in a result or a recorded error instead of a
+stack overflow, and the error log can be capped.
+
+### Added
+
+- `Parser::with_error_limit`, `Parser::error_limit` and
+  `Parser::omitted_errors`. Errors past the cap are counted but not stored, so a
+  recovering grammar can't use unbounded memory on a large malformed file.
+  `Parser::new` still keeps every error.
+- `Parser::with_depth_limit` and `Parser::depth_limit`, the nesting limit for
+  `Pratt::expression` (default 256).
+
+### Changed
+
+- `Pratt::expression` no longer recurses for infix operators. Pending
+  operators wait on a heap stack, so a right-associative chain of any length
+  (`a = b = c = ...`, `2 ^ 2 ^ ...`) parses in constant stack space. The driver
+  makes the same grammar calls in the same order as before, so results don't
+  change. It is also a little faster on long expressions.
+- `Pratt::expression` counts its own nesting. Nesting through `prefix`
+  (parentheses, prefix operators) past the depth limit records "expression
+  nested too deeply" and returns `None`. Before, deep enough input overflowed
+  the stack and aborted the process.
+- `Parser::has_errors` is also true when errors were recorded past the cap, and
+  `Checkpoint` / `rewind` restore the omitted count too.
+
+### Fixed
+
+- A chain of about a million right-associative operators overflowed the stack.
+  It now parses.
+
+---
+
 ## [1.0.0] - 2026-06-28
 
 API freeze. The cursor and Pratt surface is stable and will not change in a
@@ -65,7 +100,8 @@ Initial scaffold and repository bootstrap. No domain logic yet &mdash; this rele
 - `.github/workflows/ci.yml` CI matrix; `deny.toml`, `clippy.toml`, `rustfmt.toml`.
 - `dev/DIRECTIVES.md` and `dev/ROADMAP.md` (committed engineering standards + plan).
 
-[Unreleased]: https://github.com/jamesgober/parser-lang/compare/v1.0.0...HEAD
+[Unreleased]: https://github.com/jamesgober/parser-lang/compare/v1.1.0...HEAD
+[1.1.0]: https://github.com/jamesgober/parser-lang/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/jamesgober/parser-lang/compare/v0.2.0...v1.0.0
 [0.2.0]: https://github.com/jamesgober/parser-lang/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/jamesgober/parser-lang/releases/tag/v0.1.0

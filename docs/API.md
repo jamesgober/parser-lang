@@ -68,6 +68,9 @@ assert!(p.eat(|k| matches!(k, K::Plus)).is_some());
 | Method | Description |
 |--------|-------------|
 | `new(tokens: &'t [Token<K>]) -> Parser<'t, K>` | A cursor over `tokens`, at the first significant token. |
+| `with_error_limit(self, limit: usize) -> Parser<'t, K>` _(1.1)_ | Store at most `limit` errors; later ones are only counted. |
+| `error_limit(&self) -> Option<usize>` / `omitted_errors(&self) -> usize` _(1.1)_ | The error cap, and how many errors went past it. |
+| `with_depth_limit(self, limit: usize) -> Parser<'t, K>` / `depth_limit(&self) -> usize` _(1.1)_ | How deeply `Pratt::expression` calls may nest (default 256). |
 | `peek(&self) -> Option<&'t Token<K>>` | The current significant token, or `None` at the end. |
 | `peek_kind(&self) -> Option<&'t K>` | The current token's kind. |
 | `span(&self) -> Span` | The current token's span, or an empty end-of-input span. |
@@ -81,15 +84,20 @@ assert!(p.eat(|k| matches!(k, K::Plus)).is_some());
 | `repeated(&mut self, parse) -> Vec<T>` | Parse items until `parse` returns `None`. |
 | `separated(&mut self, sep, parse) -> Vec<T>` | Parse a `sep`-separated list. |
 | `checkpoint(&self) -> Checkpoint` / `rewind(&mut self, cp)` | Save and restore the cursor and error log, for speculative parsing. |
-| `errors(&self) -> &[Diagnostic]` / `has_errors(&self) -> bool` / `into_errors(self) -> Vec<Diagnostic>` | Inspect or take the recorded diagnostics. |
+| `errors(&self) -> &[Diagnostic]` / `has_errors(&self) -> bool` / `into_errors(self) -> Vec<Diagnostic>` | Inspect or take the recorded diagnostics. `has_errors` also counts errors past the cap. |
 
 The predicate methods take `impl FnOnce(&K) -> bool`; `recover`/`separated` take
 `Fn`/`FnMut`. The token references returned are tied to the stream's lifetime
 `'t`, so they outlive the borrow of the parser.
 
+**Limits.** A recovering grammar can record one error per token, so on untrusted
+input set a cap with `with_error_limit`; errors past it are counted in
+`omitted_errors` but not stored. `Parser::new` keeps every error, as in 1.0. The
+depth limit bounds nesting through `Pratt::prefix` (see `Pratt` below).
+
 ## `Checkpoint`
 
-An opaque, `Copy` snapshot of the cursor position and error count, from
+An opaque, `Copy` snapshot of the cursor position and error counts, from
 `Parser::checkpoint`. Pass it to `Parser::rewind` to undo a speculative parse —
 the cursor returns and any diagnostics recorded since are dropped.
 
@@ -111,7 +119,15 @@ associativity.
 | `parse(&mut self, p) -> Option<Output>` _(provided)_ | Parse a full expression (minimum binding power 0). |
 
 Returning `None` from any method signals a recoverable error (after recording a
-diagnostic on the parser), and the driver unwinds. Postfix operators (a call `()`,
+diagnostic on the parser), and the driver unwinds.
+
+**Depth.** The driver never recurses for infix operators: pending operators
+wait on a heap stack, so a chain of any length and associativity (`a = b = c =
+...`, `2 ^ 2 ^ ...`) parses in constant call-stack space. Nesting through
+`prefix` (parentheses, prefix operators that call `expression`) does use the
+call stack, one level per call, so `expression` checks the parser's depth limit
+(default 256, set with `Parser::with_depth_limit`). Past it, it records
+"expression nested too deeply" and returns `None`. Postfix operators (a call `()`,
 an index `[]`) are handled inside `prefix` by looping on the trailing tokens after
 the atom.
 
@@ -172,9 +188,9 @@ Deliberately left out of 1.0, each addable later without a breaking change:
 - **No combinator trait / monadic layer.** parser-lang is a cursor-and-helpers
   toolkit for hand-written recursive descent (with `repeated` / `separated`), not a
   combinator framework; a combinator layer could be added on top.
-- **No built-in expression-depth limit.** Expression nesting is bounded by the call
-  stack, as in any recursive-descent parser; a configurable depth guard can be
-  added later.
+- **Depth of hand-written recursion.** Since 1.1 the Pratt driver bounds its
+  own nesting (see `Pratt`). Recursion in the grammar's other functions, such
+  as nested statements or blocks, is the grammar's to bound.
 
 ---
 

@@ -18,7 +18,12 @@ use token_lang::{Span, Token, TokenKind};
 pub struct Checkpoint {
     pos: usize,
     errors: usize,
+    omitted: usize,
 }
+
+/// The default [depth limit](Parser::with_depth_limit): how many nested
+/// [`Pratt::expression`](crate::Pratt::expression) calls a parser allows.
+const DEFAULT_DEPTH_LIMIT: usize = 256;
 
 /// A cursor over a slice of [`Token`]s, with error recovery, that a hand-written
 /// recursive-descent grammar drives.
@@ -70,6 +75,14 @@ pub struct Parser<'t, K> {
     /// Where to attribute an error reported at end of input.
     eof_span: Span,
     errors: Vec<Diagnostic>,
+    /// Diagnostics recorded past `error_limit` and not stored.
+    omitted: usize,
+    /// The most diagnostics kept, or `None` for no cap.
+    error_limit: Option<usize>,
+    /// How many `Pratt::expression` calls are active right now.
+    depth: usize,
+    /// The most `Pratt::expression` calls allowed to be active at once.
+    depth_limit: usize,
 }
 
 impl<'t, K: TokenKind> Parser<'t, K> {
@@ -108,9 +121,112 @@ impl<'t, K: TokenKind> Parser<'t, K> {
             pos: 0,
             eof_span,
             errors: Vec::new(),
+            omitted: 0,
+            error_limit: None,
+            depth: 0,
+            depth_limit: DEFAULT_DEPTH_LIMIT,
         };
         parser.skip_trivia();
         parser
+    }
+
+    /// Caps how many diagnostics the parser stores, returning the parser.
+    ///
+    /// Past the cap, new errors are still counted, in
+    /// [`omitted_errors`](Parser::omitted_errors), and still make
+    /// [`has_errors`](Parser::has_errors) true, but they are not kept, so memory
+    /// stays bounded however much malformed input a recovering grammar walks
+    /// through. A limit of `0` stores nothing and only counts. Without a cap
+    /// (the default for [`new`](Parser::new)) every error is kept; set one
+    /// whenever the input is untrusted.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use parser_lang::{Parser, Span, Token, TokenKind};
+    /// # #[derive(Clone, Copy)] enum K { Bad }
+    /// # impl TokenKind for K {}
+    /// let tokens = [Token::new(K::Bad, Span::new(0, 1))];
+    /// let mut p = Parser::new(&tokens).with_error_limit(2);
+    /// for _ in 0..5 {
+    ///     p.error("unexpected token");
+    /// }
+    /// assert_eq!(p.errors().len(), 2);
+    /// assert_eq!(p.omitted_errors(), 3);
+    /// assert_eq!(p.error_limit(), Some(2));
+    /// ```
+    #[must_use]
+    pub fn with_error_limit(mut self, limit: usize) -> Self {
+        self.error_limit = Some(limit);
+        self
+    }
+
+    /// Returns the cap set by [`with_error_limit`](Parser::with_error_limit), or
+    /// `None` if every error is stored.
+    #[must_use]
+    pub fn error_limit(&self) -> Option<usize> {
+        self.error_limit
+    }
+
+    /// Returns how many errors were recorded past the
+    /// [error limit](Parser::with_error_limit) and not stored.
+    #[must_use]
+    pub fn omitted_errors(&self) -> usize {
+        self.omitted
+    }
+
+    /// Sets how deeply [`Pratt::expression`](crate::Pratt::expression) calls may
+    /// nest, returning the parser.
+    ///
+    /// Infix chains do not count: the Pratt driver keeps pending operators on
+    /// the heap. What counts is nesting through the grammar's own
+    /// [`prefix`](crate::Pratt::prefix), such as parentheses and prefix
+    /// operators, where each level calls back into `expression` and so uses
+    /// call stack. The outermost call is level 1. A call that would go past the
+    /// limit records an "expression nested too deeply" error and returns `None`.
+    ///
+    /// The default is 256, which fits comfortably in a 1 MiB thread stack in an
+    /// unoptimised build. Raise it only if the parser runs on a thread with a
+    /// larger stack; a limit too high for the stack lets deep input overflow it.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use parser_lang::{Parser, Span, Token, TokenKind};
+    /// # #[derive(Clone, Copy)] enum K { A }
+    /// # impl TokenKind for K {}
+    /// let tokens = [Token::new(K::A, Span::new(0, 1))];
+    /// assert_eq!(Parser::new(&tokens).depth_limit(), 256);
+    /// assert_eq!(Parser::new(&tokens).with_depth_limit(64).depth_limit(), 64);
+    /// ```
+    #[must_use]
+    pub fn with_depth_limit(mut self, limit: usize) -> Self {
+        self.depth_limit = limit;
+        self
+    }
+
+    /// Returns the nesting limit for
+    /// [`Pratt::expression`](crate::Pratt::expression); see
+    /// [`with_depth_limit`](Parser::with_depth_limit).
+    #[must_use]
+    pub fn depth_limit(&self) -> usize {
+        self.depth_limit
+    }
+
+    /// Enters one level of expression nesting. Returns `false`, after recording
+    /// an error, if that would pass the depth limit.
+    pub(crate) fn enter_expression(&mut self) -> bool {
+        if self.depth >= self.depth_limit {
+            self.error("expression nested too deeply");
+            return false;
+        }
+        self.depth += 1;
+        true
+    }
+
+    /// Leaves a level entered by [`enter_expression`](Parser::enter_expression).
+    pub(crate) fn leave_expression(&mut self) {
+        self.depth = self.depth.saturating_sub(1);
     }
 
     /// Advances the cursor past any trivia tokens, parking it on the next
@@ -259,7 +375,17 @@ impl<'t, K: TokenKind> Parser<'t, K> {
 
     /// Records an error diagnostic at a specific span — for instance pointing back
     /// at an unclosed opening delimiter rather than at the current token.
+    ///
+    /// Past the [error limit](Parser::with_error_limit) the error is counted in
+    /// [`omitted_errors`](Parser::omitted_errors) instead of being stored.
     pub fn error_at(&mut self, span: Span, message: impl Into<Box<str>>) {
+        if self
+            .error_limit
+            .is_some_and(|limit| self.errors.len() >= limit)
+        {
+            self.omitted = self.omitted.saturating_add(1);
+            return;
+        }
         self.errors.push(Diagnostic::new(
             Severity::Error,
             message,
@@ -402,6 +528,7 @@ impl<'t, K: TokenKind> Parser<'t, K> {
         Checkpoint {
             pos: self.pos,
             errors: self.errors.len(),
+            omitted: self.omitted,
         }
     }
 
@@ -426,6 +553,7 @@ impl<'t, K: TokenKind> Parser<'t, K> {
     pub fn rewind(&mut self, checkpoint: Checkpoint) {
         self.pos = checkpoint.pos;
         self.errors.truncate(checkpoint.errors);
+        self.omitted = checkpoint.omitted;
     }
 
     /// Returns the diagnostics recorded so far, in the order they occurred.
@@ -434,10 +562,11 @@ impl<'t, K: TokenKind> Parser<'t, K> {
         &self.errors
     }
 
-    /// Returns `true` if any diagnostic has been recorded.
+    /// Returns `true` if any diagnostic has been recorded, including any past
+    /// the [error limit](Parser::with_error_limit) that were not stored.
     #[must_use]
     pub fn has_errors(&self) -> bool {
-        !self.errors.is_empty()
+        !self.errors.is_empty() || self.omitted > 0
     }
 
     /// Consumes the parser, returning all recorded diagnostics in source order.
@@ -551,5 +680,53 @@ mod tests {
         // breaks after the first no-progress iteration.
         let collected = p.repeated(|_p| Some(1u8));
         assert_eq!(collected, [1]);
+    }
+
+    #[test]
+    fn test_error_limit_counts_past_the_cap() {
+        let t = toks(&[K::Num]);
+        let mut p = Parser::new(&t).with_error_limit(3);
+        for _ in 0..1_000 {
+            p.error("bad");
+        }
+        assert_eq!(p.errors().len(), 3);
+        assert_eq!(p.omitted_errors(), 997);
+        assert!(p.has_errors());
+        assert_eq!(p.into_errors().len(), 3);
+    }
+
+    #[test]
+    fn test_zero_error_limit_only_counts() {
+        let t = toks(&[K::Num]);
+        let mut p = Parser::new(&t).with_error_limit(0);
+        assert!(!p.has_errors());
+        assert!(p.expect(|k| matches!(k, K::Plus), "`+`").is_none());
+        assert!(p.errors().is_empty());
+        assert_eq!(p.omitted_errors(), 1);
+        assert!(p.has_errors());
+    }
+
+    #[test]
+    fn test_uncapped_by_default() {
+        let t = toks(&[K::Num]);
+        let mut p = Parser::new(&t);
+        assert_eq!(p.error_limit(), None);
+        for _ in 0..500 {
+            p.error("bad");
+        }
+        assert_eq!((p.errors().len(), p.omitted_errors()), (500, 0));
+    }
+
+    #[test]
+    fn test_checkpoint_rewinds_omitted_errors() {
+        let t = toks(&[K::Num, K::Plus]);
+        let mut p = Parser::new(&t).with_error_limit(1);
+        p.error("kept");
+        let cp = p.checkpoint();
+        p.error("over");
+        p.error("over");
+        assert_eq!(p.omitted_errors(), 2);
+        p.rewind(cp);
+        assert_eq!((p.errors().len(), p.omitted_errors()), (1, 0));
     }
 }
