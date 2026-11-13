@@ -83,7 +83,7 @@ assert_eq!(Calc.parse(&mut p), Some(7));
 
 ## Status
 
-This is <code>v1.0.0</code>: the public API is stable and frozen under SemVer. The `Parser` cursor (with error recovery) and the `Pratt` precedence engine are complete and catalogued in <a href="./docs/API.md"><code>docs/API.md</code></a>.
+This is <code>v1.1.0</code>: the public API is stable and frozen under SemVer. The `Parser` cursor (with error recovery) and the `Pratt` precedence engine are complete and catalogued in <a href="./docs/API.md"><code>docs/API.md</code></a>.
 
 <hr>
 <br>

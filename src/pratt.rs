@@ -1,5 +1,7 @@
 //! Pratt (precedence-climbing) expression parsing.
 
+use alloc::vec::Vec;
+
 use token_lang::{Token, TokenKind};
 
 use crate::Parser;
@@ -107,28 +109,101 @@ pub trait Pratt<'t, K: TokenKind> {
     /// a minimum of `0`. Call it directly with an operator's right binding power
     /// from inside [`prefix`](Pratt::prefix) to parse the operand of a prefix
     /// operator.
+    ///
+    /// # Depth
+    ///
+    /// Infix operators never recurse: pending operators wait on a heap stack, so
+    /// a chain of any length and associativity (`a = b = c = ...`, `2 ^ 2 ^ ...`)
+    /// parses in constant call-stack space.
+    ///
+    /// Nesting that passes through [`prefix`](Pratt::prefix) (a parenthesized
+    /// group, a prefix operator) does recurse, because `prefix` calls back into
+    /// this method. Each call counts one level against the parser's
+    /// [depth limit](Parser::with_depth_limit). Past it, the call records an
+    /// "expression nested too deeply" error at the current token and returns
+    /// `None`, so hostile input ends in a diagnostic rather than a stack
+    /// overflow.
     fn expression(&mut self, parser: &mut Parser<'t, K>, min_bp: u8) -> Option<Self::Output> {
-        let mut left = self.prefix(parser)?;
-        while let Some(kind) = parser.peek_kind() {
-            let Some((left_bp, right_bp)) = self.infix_binding(kind) else {
-                break;
-            };
-            if left_bp < min_bp {
-                break;
-            }
-            // Consume the operator, then its right operand at the operator's right
-            // binding power — higher right power groups more to the right.
-            let op = parser.bump()?;
-            let right = self.expression(parser, right_bp)?;
-            left = self.infix(op, left, right)?;
+        if !parser.enter_expression() {
+            return None;
         }
-        Some(left)
+        let result = climb(self, parser, min_bp);
+        parser.leave_expression();
+        result
     }
 
     /// Parses a complete expression from the cursor (minimum binding power `0`).
     fn parse(&mut self, parser: &mut Parser<'t, K>) -> Option<Self::Output> {
         self.expression(parser, 0)
     }
+}
+
+/// The precedence-climbing loop behind [`Pratt::expression`].
+///
+/// It makes exactly the calls the textbook recursive form makes, in the same
+/// order: `prefix` for each operand, `infix_binding` each time an operator is
+/// considered, and `infix` as soon as an operator's right operand is complete.
+/// Where the recursive form would call itself for a right operand that goes on
+/// past its first atom, this loop pushes the operator and its left operand on a
+/// heap stack and continues in place; when an operand ends, the top of the
+/// stack is popped and combined, and the loop resumes at the popped level's
+/// minimum binding power. A right operand that is a single atom (the common
+/// case for left-associative chains) is combined at once, without the stack.
+fn climb<'t, K, G>(grammar: &mut G, parser: &mut Parser<'t, K>, min_bp: u8) -> Option<G::Output>
+where
+    K: TokenKind,
+    G: Pratt<'t, K> + ?Sized,
+{
+    // Each entry is a suspended level: its minimum binding power, its left
+    // operand, and the operator whose right operand is being parsed.
+    let mut pending: Vec<(u8, G::Output, &'t Token<K>)> = Vec::new();
+    let mut min = min_bp;
+    let mut left = grammar.prefix(parser)?;
+    // The right binding power of the operator at the cursor, if it binds at
+    // least as tightly as `min` and so continues the current level.
+    let mut next = continues(grammar, parser, min);
+    loop {
+        if let Some(right_bp) = next {
+            // Consume the operator, then parse its right operand at the
+            // operator's right binding power: a higher right power groups more
+            // to the right.
+            let op = parser.bump()?;
+            let right = grammar.prefix(parser)?;
+            let inner = continues(grammar, parser, right_bp);
+            if inner.is_some() {
+                // The right operand goes on: suspend this level.
+                pending.push((min, left, op));
+                min = right_bp;
+                left = right;
+                next = inner;
+            } else {
+                left = grammar.infix(op, left, right)?;
+                next = continues(grammar, parser, min);
+            }
+            continue;
+        }
+        // The current operand is complete. Hand it to the operator waiting for
+        // it, or return it if none is.
+        let Some((outer_min, outer_left, op)) = pending.pop() else {
+            return Some(left);
+        };
+        left = grammar.infix(op, outer_left, left)?;
+        min = outer_min;
+        next = continues(grammar, parser, min);
+    }
+}
+
+/// Returns the right binding power of the infix operator at the cursor if its
+/// left binding power is at least `min_bp`, or `None` if the cursor is not on
+/// such an operator.
+fn continues<'t, K, G>(grammar: &G, parser: &Parser<'t, K>, min_bp: u8) -> Option<u8>
+where
+    K: TokenKind,
+    G: Pratt<'t, K> + ?Sized,
+{
+    let kind = parser.peek_kind()?;
+    let (left_bp, right_bp) = grammar.infix_binding(kind)?;
+    (left_bp >= min_bp).then_some(right_bp)
 }
 
 #[cfg(test)]
